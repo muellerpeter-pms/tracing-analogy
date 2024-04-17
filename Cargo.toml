@@ -7,6 +7,10 @@ edition = "2021"
 
 [dependencies]
 tracing = "*"
+tonic ="*"
+prost = "*"
+prost-types = "*"
 
 [build-dependencies]
 reqwest = { version = "*", features = ["blocking"] }
+tonic-build = "*"
