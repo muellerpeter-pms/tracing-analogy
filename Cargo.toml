@@ -7,9 +7,14 @@ edition = "2021"
 
 [dependencies]
 tracing = "*"
+tracing-subscriber = {version = "*" ,features = ["env-filter", "json"]}
 tonic ="*"
 prost = "*"
 prost-types = "*"
+tokio= {version="*",features = ["rt-multi-thread", "macros"]}
+tokio-stream = "*"
+gethostname ="*"
+thread-id="*"
 
 [build-dependencies]
 reqwest = { version = "*", features = ["blocking"] }
