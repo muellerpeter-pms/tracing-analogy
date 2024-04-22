@@ -19,7 +19,7 @@ fn main() {
         .bytes()
         .expect("Failed to get responses bytes");
 
-    if need_to_rewrite_file(output_path, &response.as_ref()) {
+    if need_to_rewrite_file(output_path, response.as_ref()) {
         let mut output_file = File::create(output_path).expect("Failed to create file");
         copy(&mut response.as_ref(), &mut output_file).expect("Failed to save file");
     }
