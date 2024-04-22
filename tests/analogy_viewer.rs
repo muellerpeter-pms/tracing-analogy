@@ -10,6 +10,7 @@ use tracing_analogy::AnalogyLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::test]
+#[ignore = "works only with installed and activated \"Analogy Viewer\""]
 async fn test_message() {
     let layer = AnalogyLayer::new("http://localhost:6000").await.unwrap();
 
