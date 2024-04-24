@@ -12,7 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 #[tokio::test]
 #[ignore = "works only with installed and activated \"Analogy Viewer\""]
 async fn test_message() {
-    let layer = AnalogyLayer::new("http://localhost:6000").await.unwrap();
+    let layer = AnalogyLayer::new("http://localhost:6000".to_string()).await.unwrap();
 
     tracing_subscriber::registry()
         .with(EnvFilter::new("error,test=TRACE"))
