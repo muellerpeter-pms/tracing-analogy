@@ -6,11 +6,18 @@ use std::{
     time::SystemTime,
 };
 
+use json::{object, JsonValue};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::wrappers::ReceiverStream;
 
-use tracing::{Level, Subscriber};
-use tracing_subscriber::{field::VisitOutput, fmt::format::JsonVisitor, Layer};
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::{
+    field::VisitOutput,
+    fmt::{format::{Json, JsonVisitor}, FormatFields, FormattedFields},
+    layer::Context,
+    registry::LookupSpan,
+    Layer,
+};
 
 pub mod analogy {
     #[path = "greet.rs"]
@@ -47,7 +54,9 @@ impl From<tonic::Status> for Error {
     }
 }
 
-struct Event<'a>(&'a tracing::Event<'a>);
+struct ContextRelatedEvent<'a, S>(&'a tracing::Event<'a>, Context<'a, S>)
+where
+    S: Subscriber + for<'b> LookupSpan<'b>;
 
 pub struct AnalogyLayer {
     tx: Arc<Mutex<ServerState<Sender<AnalogyGrpcLogMessage>>>>,
@@ -80,7 +89,10 @@ impl AnalogyLayer {
         })
     }
 
-    fn send_to_server(&self, event: &Event<'_>) {
+    fn send_to_server<S>(&self, event: &ContextRelatedEvent<'_, S>)
+    where
+        S: Subscriber + for<'b> LookupSpan<'b>,
+    {
         let msg: AnalogyGrpcLogMessage = event.into();
 
         let mut tx = self
@@ -97,31 +109,43 @@ impl AnalogyLayer {
             }
             ServerState::None => {
                 *tx = ServerState::Pending;
-                tokio::spawn(Self::restore_connection(self.destination.clone(), self.tx.clone()));
+                tokio::spawn(Self::restore_connection(
+                    self.destination.clone(),
+                    self.tx.clone(),
+                ));
             }
         }
     }
 
-    async fn restore_connection (dest: String, tx_dest: Arc<Mutex<ServerState<Sender<AnalogyGrpcLogMessage>>>>) {
+    async fn restore_connection(
+        dest: String,
+        tx_dest: Arc<Mutex<ServerState<Sender<AnalogyGrpcLogMessage>>>>,
+    ) {
         if let Some(tx) = Self::connect_analogy(dest).await {
-            (*tx_dest.lock().expect("Couldn't get write access to gRpc channel")) = ServerState::Some(tx);
+            (*tx_dest
+                .lock()
+                .expect("Couldn't get write access to gRpc channel")) = ServerState::Some(tx);
         } else {
-            (*tx_dest.lock().expect("Couldn't get write access to gRpc channel")) = ServerState::None;    
+            (*tx_dest
+                .lock()
+                .expect("Couldn't get write access to gRpc channel")) = ServerState::None;
         }
     }
-    
-    async fn connect_analogy<'a> (dest: String) -> Option<Sender<AnalogyGrpcLogMessage>> {
+
+    async fn connect_analogy<'a>(dest: String) -> Option<Sender<AnalogyGrpcLogMessage>> {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         let rx_stream = ReceiverStream::new(rx);
 
-        let endpoint = tonic::transport::Endpoint::from_shared(dest).expect("Failed to create endpoint");
+        let endpoint =
+            tonic::transport::Endpoint::from_shared(dest).expect("Failed to create endpoint");
         match AnalogyClient::connect(endpoint).await {
             Ok(mut client) => {
                 tokio::spawn(async move {
                     client
                         .subscribe_for_publishing_messages(rx_stream)
                         .await
-                        .map_err(|e| {println!("Connection to analogy server lost: {e}")}).ok();
+                        .map_err(|e| println!("Connection to analogy server lost: {e}"))
+                        .ok();
                 });
                 return Some(tx);
             }
@@ -132,8 +156,11 @@ impl AnalogyLayer {
     }
 }
 
-impl<'a> From<&Event<'a>> for AnalogyGrpcLogMessage {
-    fn from(value: &Event<'a>) -> Self {
+impl<'a, S> From<&ContextRelatedEvent<'a, S>> for AnalogyGrpcLogMessage
+where
+    S: Subscriber + for<'b> LookupSpan<'b>,
+{
+    fn from(value: &ContextRelatedEvent<'a, S>) -> Self {
         let level = match *value.0.metadata().level() {
             Level::TRACE => 1,
             Level::DEBUG => 3,
@@ -141,14 +168,14 @@ impl<'a> From<&Event<'a>> for AnalogyGrpcLogMessage {
             Level::WARN => 5,
             Level::ERROR => 6,
         };
+        let mut additional = HashMap::new();
 
-        let mut fields_str = String::new();
-        let mut visitor = JsonVisitor::new(&mut fields_str);
-        value.0.record(&mut visitor);
-        visitor.finish().ok();
+        let json = get_json(value);
+
+        additional.insert("json".to_string(), json.dump());
 
         AnalogyGrpcLogMessage {
-            text: fields_str,
+            text: json["event"]["message"].to_string(),
             level,
             date: Some(SystemTime::now().into()),
             process_id: std::process::id() as i32,
@@ -166,23 +193,53 @@ impl<'a> From<&Event<'a>> for AnalogyGrpcLogMessage {
             machine_name: gethostname::gethostname().into_string().unwrap_or_default(),
             category: "RUST".to_string(),
             user: "".to_string(),
-            additional_information: HashMap::new(),
+            additional_information: additional,
             id: "".to_string(),
             class: 0,
         }
     }
 }
 
+fn get_json<S>(event: &ContextRelatedEvent<'_, S>) -> JsonValue
+where
+    S: Subscriber + for<'b> LookupSpan<'b>,
+    // N: for<'a> FormatFields<'a> + 'static,
+{
+    let mut event_fields = String::new();
+    let mut visitor = JsonVisitor::new(&mut event_fields);
+    event.0.record(&mut visitor);
+    visitor.finish().ok();
+
+    let fields = json::parse(&event_fields).unwrap_or(json::JsonValue::Null);
+    let mut spans = JsonValue::new_array();
+    
+    // for span in event.1
+    // .event_scope(event.0)
+    // .into_iter()
+    // .flat_map(tracing_subscriber::registry::Scope::from_root)
+    // {
+    // let exts = span.extensions();
+    // if let Some(fields) = exts.get::<FormattedFields<N>>() {
+    //     if !fields.is_empty() {
+    //         fields.fields
+    //         write!(writer, " {}", dimmed.paint(&fields.fields))?;
+    //     }
+    // }
+    // }
+
+    object! {
+
+        event: fields,
+        spans: spans
+    }
+}
+
 impl<S> Layer<S> for AnalogyLayer
 where
-    S: Subscriber,
+    S: Subscriber + for<'b> LookupSpan<'b>,
     Self: 'static,
 {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        self.send_to_server(&Event(event)); // what to do if it fails? we can't log ...
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.send_to_server(&ContextRelatedEvent(event, ctx)); // what to do if it fails? we can't log ...
     }
 }

@@ -15,6 +15,7 @@ tokio= {version="*",features = ["rt-multi-thread", "macros"]}
 tokio-stream = "*"
 gethostname ="*"
 thread-id="*"
+json="*"
 
 [build-dependencies]
 reqwest = { version = "*", features = ["blocking"] }
